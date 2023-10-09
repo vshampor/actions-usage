@@ -26,6 +26,18 @@ type RepoSummary struct {
 	Name         string
 }
 
+type EventType string
+
+const (
+    JOB_STARTED EventType = "started"
+    JOB_FINISHED EventType = "finished"
+)
+
+type JobEvent struct {
+    Ts github.Timestamp
+    Tp EventType
+}
+
 func main() {
 	var (
 		orgName, userName, token, tokenFile, repoList, reposFile, apiUrl string
@@ -34,6 +46,7 @@ func main() {
 	)
 
 	flag.StringVar(&orgName, "org", "", "Organization name")
+	flag.StringVar(&orgName, "repo", "", "Repo name")
 	flag.StringVar(&userName, "user", "", "User name")
 	flag.StringVar(&apiUrl, "apiUrl", "", "Override Github API URL")
 	flag.StringVar(&token, "token", "", "GitHub token")
@@ -224,6 +237,8 @@ func main() {
 		}
 		log.Printf("Found %d workflow runs for %s/%s", len(workflowRuns), owner, repo.GetName())
 
+        var job_events[]JobEvent
+
 		for _, run := range workflowRuns {
 			log.Printf("Fetching jobs for: run ID: %d, startedAt: %s, conclusion: %s", run.GetID(), run.GetRunStartedAt().Format("2006-01-02 15:04:05"), run.GetConclusion())
 			workflowJobs := []*github.WorkflowJob{}
@@ -247,6 +262,8 @@ func main() {
 
 				for _, job := range jobs.Jobs {
 					if !job.GetCompletedAt().IsZero() {
+                        job_events = append(job_events, JobEvent{Ts: job.GetStartedAt(), Tp: JOB_STARTED})
+                        job_events = append(job_events, JobEvent{Ts: job.GetCompletedAt(), Tp: JOB_FINISHED})
 						dur := job.GetCompletedAt().Time.Sub(job.GetStartedAt().Time)
 						if dur > longestBuild {
 							longestBuild = dur
@@ -297,6 +314,17 @@ func main() {
 				}
 			}
 		}
+
+        sort.Slice(job_events, func(i, j int) bool { return job_events[i].Ts.Time < job_events[j].Ts.Time })
+        var live_jobs int = 0
+        for i, event := range job_events {
+            if event.Tp == JOB_STARTED {
+                live_jobs++
+            } else if event.Tp == JOB_FINISHED {
+                live_jobs--
+            }
+            fmt.Printf("At %v job count is %d", event.Ts, live_jobs)
+        }
 	}
 
 	entity := orgName
