@@ -11,6 +11,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+    "encoding/csv"
+    "strconv"
 
 	units "github.com/docker/go-units"
 
@@ -29,13 +31,13 @@ type RepoSummary struct {
 type EventType string
 
 const (
-    JOB_STARTED EventType = "started"
-    JOB_FINISHED EventType = "finished"
+	JOB_STARTED  EventType = "started"
+	JOB_FINISHED EventType = "finished"
 )
 
 type JobEvent struct {
-    Ts github.Timestamp
-    Tp EventType
+	Ts github.Timestamp
+	Tp EventType
 }
 
 func main() {
@@ -237,7 +239,7 @@ func main() {
 		}
 		log.Printf("Found %d workflow runs for %s/%s", len(workflowRuns), owner, repo.GetName())
 
-        var job_events[]JobEvent
+		var job_events []JobEvent
 
 		for _, run := range workflowRuns {
 			log.Printf("Fetching jobs for: run ID: %d, startedAt: %s, conclusion: %s", run.GetID(), run.GetRunStartedAt().Format("2006-01-02 15:04:05"), run.GetConclusion())
@@ -262,8 +264,10 @@ func main() {
 
 				for _, job := range jobs.Jobs {
 					if !job.GetCompletedAt().IsZero() {
-                        job_events = append(job_events, JobEvent{Ts: job.GetStartedAt(), Tp: JOB_STARTED})
-                        job_events = append(job_events, JobEvent{Ts: job.GetCompletedAt(), Tp: JOB_FINISHED})
+                        if job.GetConclusion() != "skipped" {
+                            job_events = append(job_events, JobEvent{Ts: job.GetStartedAt(), Tp: JOB_STARTED})
+                            job_events = append(job_events, JobEvent{Ts: job.GetCompletedAt(), Tp: JOB_FINISHED})
+                        }
 						dur := job.GetCompletedAt().Time.Sub(job.GetStartedAt().Time)
 						if dur > longestBuild {
 							longestBuild = dur
@@ -315,16 +319,24 @@ func main() {
 			}
 		}
 
-        sort.Slice(job_events, func(i, j int) bool { return job_events[i].Ts.Time < job_events[j].Ts.Time })
-        var live_jobs int = 0
-        for i, event := range job_events {
-            if event.Tp == JOB_STARTED {
-                live_jobs++
-            } else if event.Tp == JOB_FINISHED {
-                live_jobs--
-            }
-            fmt.Printf("At %v job count is %d", event.Ts, live_jobs)
-        }
+		sort.Slice(job_events, func(i, j int) bool { return job_events[i].Ts.Time.Before(job_events[j].Ts.Time) })
+		var live_jobs int = 0
+        fname := fmt.Sprintf("concurrent_jobs_%s.csv", repo.GetName())
+        csv_file, _ := os.Create(fname)
+        w := csv.NewWriter(csv_file)
+        w.Write([]string {"Unix time", "Concurrent job count"})
+		for _, event := range job_events {
+            // print once before and once after incrementing to make the result better suited for plotting a step-chart in excel
+            w.Write([]string {strconv.FormatInt(event.Ts.Time.Unix(), 10), strconv.Itoa(live_jobs)})
+			if event.Tp == JOB_STARTED {
+				live_jobs++
+			} else if event.Tp == JOB_FINISHED {
+				live_jobs--
+			}
+            w.Write([]string {strconv.FormatInt(event.Ts.Time.Unix(), 10), strconv.Itoa(live_jobs)})
+		}
+        w.Flush()
+        fmt.Printf("Concurrent jobs data written to %s\n", fname)
 	}
 
 	entity := orgName
